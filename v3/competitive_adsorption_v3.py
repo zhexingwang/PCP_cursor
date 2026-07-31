@@ -1,11 +1,18 @@
 """競争吸着カラムモデル v3（C_in_series 対応）。
 
-論文: Competitive Adsorption Model for Process Design ...
-      J. Chem. Eng. Japan, Vol.53 No.9, 2020 の定式化に基づく。
+論文: Hiromori et al., J. Chem. Eng. Japan, 53(9), 477–484 (2020)
+      Competitive Adsorption Model for Process Design of Separation
+      and Recovery Method in Porous Type Anion-Exchange Resin
+      Eqs.(1)–(12), Tables 2–3 に準拠。
+
+工業プロセス向け拡張:
+  - VE を VE1/VE2 に分割（同一の論文定数を初期値に使用）
+  - 入口濃度の時系列 C_in_series（塔間リレー）
+  - 流量 v_T の入力単位は [L/h]（内部で cm3/min に換算）
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 import copy
 import math
@@ -19,6 +26,11 @@ SeriesSpec = Union[
     Dict[str, Tuple[np.ndarray, np.ndarray]],
 ]
 
+# 論文 Table 3: k [dm3/mol/s] = [cm3/mmol/s] → ×60 で [cm3/mmol/min]
+_K1_PER_MIN = 0.973e-2 * 60.0   # 0.5838
+_K2_PER_MIN = 11.3e-2 * 60.0    # 6.78
+_K3_PER_MIN = 4.25e-2 * 60.0    # 2.55
+
 
 def _default_species() -> List[str]:
     return ["VE1", "VE2", "FA", "OH"]
@@ -29,24 +41,26 @@ def _default_adsorbing() -> List[str]:
 
 
 def _default_H() -> SpeciesDict:
-    return {"VE1": 2.0, "VE2": 2.0, "FA": 2.03, "OH": 5.22}
+    # Table 2（VE は論文 1.96 ≈ 2.0 を VE1/VE2 に適用）
+    return {"VE1": 1.96, "VE2": 1.96, "FA": 2.03, "OH": 5.22}
 
 
 def _default_k_ads() -> SpeciesDict:
-    return {"VE1": 0.35, "VE2": 0.25, "FA": 0.80}
+    # j=1 (VE), j=2 (FA)
+    return {"VE1": _K1_PER_MIN, "VE2": _K1_PER_MIN, "FA": _K2_PER_MIN}
 
 
 def _default_Keq_ads() -> SpeciesDict:
-    return {"VE1": 80.0, "VE2": 45.0, "FA": 250.0}
+    return {"VE1": 47.4, "VE2": 47.4, "FA": 412.0}
 
 
 def _default_k_ex() -> Dict[str, float]:
-    # FA が VE を置換する交換反応
-    return {"FA->VE1": 0.15, "FA->VE2": 0.12}
+    # j=3: FaH が VE を置換
+    return {"FA->VE1": _K3_PER_MIN, "FA->VE2": _K3_PER_MIN}
 
 
 def _default_Keq_ex() -> Dict[str, float]:
-    return {"FA->VE1": 4.0, "FA->VE2": 3.5}
+    return {"FA->VE1": 324.0, "FA->VE2": 324.0}
 
 
 def _default_C_in() -> SpeciesDict:
@@ -82,19 +96,21 @@ class Params:
     L: float = 83.2  # cm
     N: int = 24
 
-    # 充填・サイト
+    # 充填・サイト（q_total は論文の solid 基準 [mmol/cm3-solid]）
     eps_b: float = 0.40
-    eps_p: float = 0.55
-    q_total: float = 0.25  # mmol/cm3-resin
+    eps_p: float = 0.226  # Table 推定値
+    q_total: float = 1.10  # Fig.4 飽和付近
 
     # 時間積分
     t_end: float = 350.0  # min
     dt: float = 0.1  # min
-    dt_react_cap: float = 0.1  # min（反応サブステップ上限）
-    sample_dt: float = 1.0  # min（出力サンプリング間隔）
+    dt_react_cap: float = 0.05  # min（反応サブステップ上限）
+    sample_dt: float = 1.0  # min
 
-    # 分散（0 なら移流のみ・風上）
-    D_ax: float = 0.5  # cm2/min
+    # 粒子径（分散 Em = 2 u Rp）
+    R_p: float = 0.023  # cm (= 0.23 mm, Table 1)
+    # D_ax > 0 のとき Em を上書き。None/負なら Em=2uRp
+    D_ax: Optional[float] = None
 
     # 化学種
     species_names: List[str] = field(default_factory=_default_species)
@@ -108,19 +124,16 @@ class Params:
     k_ex: Dict[str, float] = field(default_factory=_default_k_ex)
     Keq_ex: Dict[str, float] = field(default_factory=_default_Keq_ex)
 
-    # 入口・流量
+    # 入口・流量（v_T 入力は L/h）
     C_in: SpeciesDict = field(default_factory=_default_C_in)
     C_in_series: Optional[SeriesSpec] = None
     v_T: float = 40.0  # L/h
     v_T_series: Optional[Union[pd.DataFrame, Tuple[np.ndarray, np.ndarray]]] = None
 
-    # 初期条件
-    q0: Optional[SpeciesDict] = None  # None → 全吸着種 0
-
-    # フィット対象フラグ（フォールバック。通常は params_columns で上書き）
+    q0: Optional[SpeciesDict] = None
     fit_targets: Dict[str, bool] = field(default_factory=_default_fit_targets)
 
-    # 加水分解（v4 互換。v3 では常に 0）
+    # 加水分解（v4）。v3 では 0
     k_hyd: float = 0.0
 
     def copy(self) -> "Params":
@@ -129,24 +142,33 @@ class Params:
     def area_cm2(self) -> float:
         return math.pi * (self.d * 0.5) ** 2
 
-    def superficial_u(self, v_T_Lh: float) -> float:
-        """体積流量 [L/h] → 空塔速度 [cm/min]。"""
-        Q_cm3_min = v_T_Lh * 1000.0 / 60.0
-        return Q_cm3_min / max(self.area_cm2(), 1e-12)
+    def vT_cm3_min(self, v_T_Lh: float) -> float:
+        """[L/h] → [cm3/min]。"""
+        return float(v_T_Lh) * 1000.0 / 60.0
+
+    def interstitial_u(self, v_T_Lh: float) -> float:
+        """空隙内線速度 u [cm/min] = (v_T/A) / ε_b。"""
+        u_s = self.vT_cm3_min(v_T_Lh) / max(self.area_cm2(), 1e-12)
+        return u_s / max(self.eps_b, 1e-12)
 
     def theta(self, sp: str) -> float:
-        """液相ホールドアップ θ_i = ε_b + (1-ε_b) ε_p / H_i。"""
+        """Eq.(11) 左辺係数: ε_b + (1-ε_b) ε_p H_i。"""
         H = float(self.H.get(sp, 1.0))
-        H = max(H, 1e-12)
-        return self.eps_b + (1.0 - self.eps_b) * self.eps_p / H
+        return self.eps_b + (1.0 - self.eps_b) * self.eps_p * H
 
-    def alpha(self) -> float:
-        return 1.0 - self.eps_b
+    def alpha_solid(self) -> float:
+        """Eq.(11) 固相係数: (1-ε_b)(1-ε_p)。"""
+        return (1.0 - self.eps_b) * (1.0 - self.eps_p)
 
     def eps_liq(self) -> float:
         return self.eps_b + (1.0 - self.eps_b) * self.eps_p
 
-    # ----- 時系列評価 -----
+    def Em(self, u: float) -> float:
+        """Eq.(12): Em = 2 u Rp。D_ax 指定時はそれを使用。"""
+        if self.D_ax is not None and self.D_ax >= 0:
+            return float(self.D_ax)
+        return 2.0 * float(u) * float(self.R_p)
+
     def vT_at(self, t: float) -> float:
         ser = self.v_T_series
         if ser is None:
@@ -161,7 +183,6 @@ class Params:
         return float(np.interp(t, tt, vv, left=vv[0], right=vv[-1]))
 
     def C_in_at(self, t: float) -> SpeciesDict:
-        """入口濃度を時刻 t で評価。C_in_series があれば補間、なければ C_in 固定。"""
         out = {sp: float(self.C_in.get(sp, 0.0)) for sp in self.species_names}
         ser = self.C_in_series
         if ser is None:
@@ -173,7 +194,6 @@ class Params:
                     vv = ser[sp].to_numpy(dtype=float)
                     out[sp] = float(np.interp(t, tt, vv, left=vv[0], right=vv[-1]))
             return out
-        # Dict[species, (t, v)]
         for sp, pair in ser.items():
             if sp not in out:
                 continue
@@ -184,7 +204,6 @@ class Params:
             out[sp] = float(np.interp(t, tt, vv, left=vv[0], right=vv[-1]))
         return out
 
-    # ----- フィットベクトル -----
     def fit_keys(self) -> List[str]:
         return [k for k, on in self.fit_targets.items() if on]
 
@@ -199,8 +218,7 @@ class Params:
             return float(self.k_hyd)
         if "." in key:
             group, name = key.split(".", 1)
-            d = getattr(self, group)
-            return float(d[name])
+            return float(getattr(self, group)[name])
         raise KeyError(key)
 
     def _set_by_key(self, key: str, value: float) -> None:
@@ -218,8 +236,7 @@ class Params:
             return
         if "." in key:
             group, name = key.split(".", 1)
-            d = getattr(self, group)
-            d[name] = float(value)
+            getattr(self, group)[name] = float(value)
             return
         raise KeyError(key)
 
@@ -239,7 +256,10 @@ def reaction_rhs_ads(
     q: Dict[str, np.ndarray],
     p: Params,
 ) -> Dict[str, np.ndarray]:
-    """固相吸着量の反応速度 dq/dt（セル配列）。"""
+    """論文 Eqs.(8)(9): 固相吸着速度 dq/dt。
+
+    q_OH = q_total - Σ q_ads として従属的に用いる。
+    """
     ads = list(p.adsorbing_species)
     n = next(iter(C.values())).shape[0]
     dq = {sp: np.zeros(n, dtype=float) for sp in ads}
@@ -247,63 +267,32 @@ def reaction_rhs_ads(
     q_sum = np.zeros(n, dtype=float)
     for sp in ads:
         q_sum += q[sp]
-    q_free = np.clip(p.q_total - q_sum, 0.0, None)
+    q_OH = np.clip(p.q_total - q_sum, 0.0, None)
 
-    Cres = {sp: p.H.get(sp, 1.0) * C[sp] for sp in p.species_names}
+    Cres = {sp: float(p.H.get(sp, 1.0)) * C[sp] for sp in p.species_names}
     C_OH = Cres[p.carrier_species]
 
+    # 吸着 j=1,2: iH + S+(OH-) ⇌ S+(i-) + H2O
     for sp in ads:
         kf = float(p.k_ads.get(sp, 0.0))
         Keq = max(float(p.Keq_ads.get(sp, 1.0)), 1e-12)
         kr = kf / Keq
-        dq[sp] += kf * Cres[sp] * q_free - kr * q[sp] * C_OH
+        dq[sp] += kf * q_OH * Cres[sp] - kr * q[sp] * C_OH
 
-    # 交換反応 FA ↔ VE
+    # 交換 j=3: FaH + S+(VE-) ⇌ S+(Fa-) + VEH
     for key, kf in p.k_ex.items():
         if "->" not in key:
             continue
-        a, b = key.split("->", 1)  # a displaces b (FA -> VE)
+        a, b = key.split("->", 1)  # a=FA displaces b=VE
         if a not in ads or b not in ads:
             continue
         Keq = max(float(p.Keq_ex.get(key, 1.0)), 1e-12)
         kr = float(kf) / Keq
-        rate = float(kf) * Cres[a] * q[b] - kr * Cres[b] * q[a]
+        rate = float(kf) * q[b] * Cres[a] - kr * q[a] * Cres[b]
         dq[a] += rate
         dq[b] -= rate
 
     return dq
-
-
-def _transport_step(
-    C: Dict[str, np.ndarray],
-    u: float,
-    dz: float,
-    dt: float,
-    p: Params,
-    Cin: SpeciesDict,
-    source: Dict[str, np.ndarray],
-) -> None:
-    """陽的移流（風上）+ 分散 + ソース。C を in-place 更新。"""
-    N = p.N
-    D = float(p.D_ax)
-    for sp in p.species_names:
-        c = C[sp]
-        th = max(p.theta(sp), 1e-12)
-        # 風上移流
-        flux_in = np.empty(N, dtype=float)
-        flux_in[0] = u * Cin.get(sp, 0.0)
-        flux_in[1:] = u * c[:-1]
-        flux_out = u * c
-        adv = -(flux_out - flux_in) / dz
-
-        disp = np.zeros(N, dtype=float)
-        if D > 0.0 and N >= 3:
-            disp[1:-1] = D * (c[2:] - 2.0 * c[1:-1] + c[:-2]) / (dz * dz)
-            disp[0] = D * (c[1] - c[0]) / (dz * dz)
-            disp[-1] = D * (c[-2] - c[-1]) / (dz * dz)
-
-        c += dt * (adv + disp + source[sp]) / th
-        np.maximum(c, 0.0, out=c)
 
 
 def simulate(
@@ -312,14 +301,11 @@ def simulate(
     C_in: Optional[SpeciesDict] = None,
     progress: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any], List[str]]:
-    """カラム競争吸着シミュレーション。
+    """カラム競争吸着シミュレーション（論文 Eq.(11)）。
 
     Returns
     -------
-    grid_df : 時空間プロファイル（t_min, z_cm, C_*, q_*）
-    effluent_df : 出口濃度時系列（t_min, C_*_out）
-    meta : メタ情報
-    fields : フィールド名リスト
+    grid_df, effluent_df, meta, fields
     """
     p = params.copy()
     if v_T_series is not None:
@@ -333,7 +319,8 @@ def simulate(
     t_end = float(p.t_end)
     ads = list(p.adsorbing_species)
     species = list(p.species_names)
-    alpha = p.alpha()
+    alpha_s = p.alpha_solid()
+    carrier = p.carrier_species
 
     C = {sp: np.zeros(N, dtype=float) for sp in species}
     q = {sp: np.zeros(N, dtype=float) for sp in ads}
@@ -344,7 +331,6 @@ def simulate(
 
     t_hist: List[float] = []
     C_out_hist: Dict[str, List[float]] = {sp: [] for sp in species}
-    # 間引き保存用
     snap_t: List[float] = []
     snap_C: Dict[str, List[np.ndarray]] = {sp: [] for sp in species}
     snap_q: Dict[str, List[np.ndarray]] = {sp: [] for sp in ads}
@@ -352,60 +338,79 @@ def simulate(
     sample_dt = max(float(p.sample_dt), dt)
 
     t = 0.0
-    # 仕様どおり while t < t_end + 1e-12; 浮動小数で最終点が欠けることあり
     while t < t_end + 1e-12:
         Cin = p.C_in_at(t)
-        u = p.superficial_u(p.vT_at(t))
+        u = p.interstitial_u(p.vT_at(t))
+        Em = p.Em(u)
+        # 対流係数: Eq.(11) の -u ε_b ∂C/∂x
+        u_eps = u * p.eps_b
+        Em_eps = Em * p.eps_b
 
-        # 反応サブステップ
         dt_left = dt
-        dq_accum = {sp: np.zeros(N, dtype=float) for sp in ads}
         while dt_left > 1e-15:
             dtr = min(dt_left, float(p.dt_react_cap))
             dqdt = reaction_rhs_ads(C, q, p)
-            # 加水分解（v3 では k_hyd=0。v4 で有効化）
-            r_hyd = float(p.k_hyd) * C.get("FAEE", np.zeros(N)) * C.get("OH", np.zeros(N))
-            S_hyd = p.eps_liq() * r_hyd
 
+            # 固相更新
             for sp in ads:
                 q[sp] += dtr * dqdt[sp]
                 np.maximum(q[sp], 0.0, out=q[sp])
-                dq_accum[sp] += dtr * dqdt[sp]
-
-            # 液相ソース（反応由来）をこのサブステップで即時反映しない。
-            # 移流と同時に扱うため、反応による液相変化は平均レートで後段へ。
-            # ただし加水分解と吸着による液相消費/生成は反応サブステップでも更新する。
+            # サイト総量を超えないようクリップ
+            q_sum = np.zeros(N, dtype=float)
             for sp in ads:
-                th = max(p.theta(sp), 1e-12)
-                C[sp] -= (alpha / th) * dtr * dqdt[sp]
-                np.maximum(C[sp], 0.0, out=C[sp])
-            th_oh = max(p.theta(p.carrier_species), 1e-12)
-            # 吸着で OH を液相へ放出
-            C[p.carrier_species] += (alpha / th_oh) * dtr * sum(dqdt[sp] for sp in ads)
-            np.maximum(C[p.carrier_species], 0.0, out=C[p.carrier_species])
+                q_sum += q[sp]
+            over = q_sum > p.q_total
+            if np.any(over):
+                scale = np.ones(N, dtype=float)
+                scale[over] = p.q_total / np.maximum(q_sum[over], 1e-15)
+                for sp in ads:
+                    q[sp] *= scale
 
-            if "FAEE" in C and float(p.k_hyd) != 0.0:
-                th_f = max(p.theta("FAEE"), 1e-12)
-                th_et = max(p.theta("ET"), 1e-12) if "ET" in C else 1.0
-                th_fa = max(p.theta("FA"), 1e-12)
-                C["FAEE"] -= dtr * S_hyd / th_f
-                C[p.carrier_species] -= dtr * S_hyd / th_oh
-                C["FA"] += dtr * S_hyd / th_fa
-                if "ET" in C:
-                    C["ET"] += dtr * S_hyd / th_et
-                for sp in ("FAEE", "ET", "FA", p.carrier_species):
-                    if sp in C:
-                        np.maximum(C[sp], 0.0, out=C[sp])
+            # 固相速度（クリップ後の実効値で液相ソースを組む）
+            dq_liq = {sp: dqdt[sp].copy() for sp in ads}
+            dq_OH = -sum(dq_liq[sp] for sp in ads)
+
+            # 加水分解（v4）: FAEE + OH → FA + ET
+            r_hyd = float(p.k_hyd) * C.get("FAEE", np.zeros(N)) * C.get(carrier, np.zeros(N))
+            S_hyd = p.eps_liq() * r_hyd
+
+            # 移流（風上）+ 分散 + 固相ソース（Eq.11）
+            for sp in species:
+                c = C[sp]
+                th = max(p.theta(sp), 1e-12)
+                flux_in = np.empty(N, dtype=float)
+                flux_in[0] = u_eps * Cin.get(sp, 0.0)
+                flux_in[1:] = u_eps * c[:-1]
+                flux_out = u_eps * c
+                adv = -(flux_out - flux_in) / dz
+
+                disp = np.zeros(N, dtype=float)
+                if Em_eps > 0.0 and N >= 3:
+                    disp[1:-1] = Em_eps * (c[2:] - 2.0 * c[1:-1] + c[:-2]) / (dz * dz)
+                    disp[0] = Em_eps * (c[1] - c[0]) / (dz * dz)
+                    disp[-1] = Em_eps * (c[-2] - c[-1]) / (dz * dz)
+
+                if sp in ads:
+                    solid_src = -alpha_s * dq_liq[sp]
+                elif sp == carrier:
+                    solid_src = -alpha_s * dq_OH
+                else:
+                    solid_src = 0.0
+
+                # 加水分解ソース（仕様: θ ∂C/∂t = … − S_i）
+                hyd = 0.0
+                if float(p.k_hyd) != 0.0:
+                    if sp == "FAEE" or sp == carrier:
+                        hyd = -S_hyd
+                    elif sp == "FA" or sp == "ET":
+                        hyd = +S_hyd
+
+                c += dtr * (adv + disp + solid_src + hyd) / th
+                np.maximum(c, 0.0, out=c)
 
             dt_left -= dtr
 
-        # 移流・分散（反応ソースは既に液相へ適用済みなので source=0）
-        zero_src = {sp: np.zeros(N, dtype=float) for sp in species}
-        _transport_step(C, u, dz, dt, p, Cin, zero_src)
-
         t += dt
-
-        # 出口記録（毎ステップ）
         if t + 1e-12 >= next_sample or t >= t_end - 1e-12:
             t_hist.append(t)
             for sp in species:
@@ -442,21 +447,19 @@ def simulate(
         "dt": p.dt,
         "q_total": p.q_total,
         "eps_b": p.eps_b,
+        "eps_p": p.eps_p,
         "k_hyd": p.k_hyd,
         "species_names": list(species),
         "adsorbing_species": list(ads),
+        "paper": "Hiromori et al., JCEJ 53(9) 2020",
     }
     field_names = ["t_min", "z_cm"] + [f"C_{sp}" for sp in species] + [f"q_{sp}" for sp in ads]
     return grid_df, effluent_df, meta, field_names
 
 
 def effluent_to_Cin_series(effluent_df: pd.DataFrame, species_names: Sequence[str]) -> pd.DataFrame:
-    """出口 DataFrame を後塔の C_in_series（t_min + 成分列）に変換。"""
     out = pd.DataFrame({"t_min": effluent_df["t_min"].to_numpy(dtype=float)})
     for sp in species_names:
         col = f"C_{sp}_out"
-        if col in effluent_df.columns:
-            out[sp] = effluent_df[col].to_numpy(dtype=float)
-        else:
-            out[sp] = 0.0
+        out[sp] = effluent_df[col].to_numpy(dtype=float) if col in effluent_df.columns else 0.0
     return out

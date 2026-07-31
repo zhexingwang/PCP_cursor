@@ -13,7 +13,7 @@ from scipy.optimize import differential_evolution
 from competitive_adsorption_v3 import Params, simulate
 
 DEFAULT_BOUNDS: Dict[str, Tuple[float, float]] = {
-    "q_total": (0.05, 1.5),
+    "q_total": (0.2, 2.5),  # mmol/cm3-solid（論文スケール）
     "eps_b": (0.25, 0.55),
     "eps_p": (0.30, 0.80),
     "k_hyd": (0.0, 5.0),

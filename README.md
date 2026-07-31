@@ -11,6 +11,16 @@
 
 各フォルダは自己完結しており、仕様書・コード・データを含みます。
 
+## 理論根拠
+
+コアモデルは Hiromori et al., *J. Chem. Eng. Japan*, **53**(9), 477–484 (2020) の
+Eqs.(1)–(12)・Tables 2–3 に準拠（`docs/Hiromori_JCEJ_2020_53_20WE066.pdf`）。
+
+- 分配: $\overline{C}_i = H_i C_i$
+- 質量収支: Eq.(11)（$\theta_i=\varepsilon_b+(1-\varepsilon_b)\varepsilon_p H_i$, $\alpha=(1-\varepsilon_b)(1-\varepsilon_p)$）
+- 分散: $E_m=2u R_p$
+- 速度・平衡定数: Table 3 を [cm³/mmol/min] に換算して既定値化
+
 ## セットアップ
 
 ```bash
