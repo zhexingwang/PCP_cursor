@@ -408,7 +408,7 @@ def get_R004B_params() -> Params:  # d=25.0, L=42.0
 >
 > `competitive_adsorption_v4.py` の `Params.fit_targets` デフォルト値は「`Params()` を単体生成し、上書きも通さない場合」のみ効くフォールバックであり、通常フローでは**必ず上書きされる**。フィット対象を変えたい場合はこの関数（または呼び出し側で `p.fit_targets` を上書き）を編集すること。
 
-**k_hyd の DE 境界**（`parameter_fitting_v4.DEFAULT_BOUNDS`）: `(0.0, 5.0)` [cm³/mmol/min]。上限は陽的時間積分の安定性（dt_react_cap=0.1 のとき実効レート k_hyd·C_OH·dt < 1 目安）を考慮した値。フィット値が上限に張り付く場合は dt_react_cap を縮めた上で上限を緩める。
+**k_hyd の DE 境界**（`parameter_fitting_v4.DEFAULT_BOUNDS`）: `(0.0, 0.05)` [cm³/mmol/min]。VE ピーク高さ・時刻への感度が大きく、運用上は 0 近傍が妥当なため上限を小さく設定。フィット値が上限に張り付く場合のみ上限を緩める。
 
 ---
 
@@ -822,7 +822,7 @@ outputs_chain_v4/
 | R004A 観測点が 0 | `data/r004a_observed_batches.csv` を確認、または `--data-suffix _test` |
 | フィット結果が境界に張り付く | `parameter_fitting_v4.DEFAULT_BOUNDS` の境界を緩める |
 | 数値振動が出る | `params_columns_v4.apply_dt_react_cap_all()` で `dt_react_cap` を 0.05 や 0.03 に縮める |
-| **k_hyd が上限 5.0 に張り付く** ★v4 | dt_react_cap を縮めた上で `DEFAULT_BOUNDS["k_hyd"]` の上限を緩める（§9） |
+| **k_hyd が上限 0.05 に張り付く** ★v4 | `DEFAULT_BOUNDS["k_hyd"]` の上限を緩める（必要なら dt_react_cap も縮小） |
 | **`[feed] batch X: C0_FAEE が…無いため固定値 0.0 を使用します` 警告** ★v4 | そのバッチの原料組成が未登録。`data/feed_composition_v4.csv` に行を追加する（加水分解を効かせたい場合） |
 | R004B 予測が VE 漏れあり | R004A のフィット結果が想定外の可能性。overlay 図と物理整合性を確認 |
 
