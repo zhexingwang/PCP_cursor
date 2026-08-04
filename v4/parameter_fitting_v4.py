@@ -16,7 +16,9 @@ DEFAULT_BOUNDS: Dict[str, Tuple[float, float]] = {
     "q_total": (0.2, 2.5),  # mmol/cm3-solid（論文スケール）
     "eps_b": (0.25, 0.55),
     "eps_p": (0.30, 0.80),
-    "k_hyd": (0.0, 5.0),
+    # 感度大: k≈0.01 で VE ピーク高+約80%・tpeak が百 min オーダー早まる。
+    # 運用上は 0 近傍が妥当なため上限を小さくする。
+    "k_hyd": (0.0, 0.05),
     "k_ads.VE1": (1e-3, 5.0),
     "k_ads.VE2": (1e-3, 5.0),
     "k_ads.FA": (1e-3, 5.0),
