@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# generated run artifacts (keep folder placeholders)
+v3/results_v3/**
+!v3/results_v3/.gitkeep
+v3/outputs_chain_v3/**
+!v3/outputs_chain_v3/.gitkeep
+v4/results_v4/**
+!v4/results_v4/.gitkeep
+v4/outputs_chain_v4/**
+!v4/outputs_chain_v4/.gitkeep
